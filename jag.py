@@ -4,16 +4,13 @@ import threading
 import time
 import select
 import pynmea2
-
-PACKET_START = "\x5E\x02"
-PACKET_END   = "\x5E\x0D"
-PWM_CTRL     = "\x06"
-TWELVE       = "\x0C"
+import cmd
 
 class Jaguar(threading.Thread):
     def __init__(self,ip):
         port = 10001
-        print "Connecting to: " + ip
+        print "Connecting to: " + ip + "..."
+        
         ipAddr = map(int,ip.split('.'))
         imuIpAddr = ipAddr
         imuIpAddr[3] += 1
@@ -23,30 +20,58 @@ class Jaguar(threading.Thread):
         self.logFile = open("log",'w')
         self.stop= threading.Event()
 
-        # connect to robot control board
-        self.ctlSock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.ctlSock.connect((ip,port))
-        self.ctlSock.send("a")
+        try:
+            # connect to robot control board
+            self.ctlSock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.ctlSock.connect((ip,port))
+            self.ctlSock.send("a")
 
-        # connect to imu
-        self.x_mag,self.y_mag,self.z_mag = (0,0,0)
-        self.imuSock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.imuSock.connect((imuIpAddr,10001))
+            # connect to imu
+            self.x_mag,self.y_mag,self.z_mag = (0,0,0)
+            self.imuSock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.imuSock.settimeout(2.0)
+            self.imuSock.connect((imuIpAddr,10001))
 
-        # connect to gps
-        self.x_mag,self.y_mag,self.z_mag = (0,0,0)
-        self.gpsSock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.gpsSock.connect((imuIpAddr,10002))
-        self.gpsParser = pynmea2.NMEAStreamReader()
+            # connect to gps
+            self.x_mag,self.y_mag,self.z_mag = (0,0,0)
+            self.gpsSock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.gpsSock.settimeout(2.0)
+            self.gpsSock.connect((imuIpAddr,10002))
+            self.gpsParser = pynmea2.NMEAStreamReader()
+        except Exception as e:
+            print "Failed to connect: " + str(e)
+            self.connected = False
+            return
+
+        self.connected = True
 
         threading.Thread.__init__(self, name="jagpy")
         self.start()
+
+    #def testConnection(self,ip):
+    #    # Give the ip of the main robot control board
+    #    # but we will try to connect to imu because it is TCP
+    #    ip = map(int,ip.split('.'))
+    #    ip = ipAddr
+    #    ip[3] += 1
+    #    ip = map(str, imuIpAddr)
+    #    ip = '.'.join(imuIpAddr)
+    #    try:
+    #        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    #        sock.settimeout(2.0)
+    #        sock.connect((ip,10001))
+    #    except:
+    #        sock.close()
+    #        return False
+
+    #    return True
 
     def run(self):
         while not self.stop.isSet():
             (rSocks,_,_) = select.select([self.ctlSock, self.imuSock, self.gpsSock],[],[],1)
             for sock in rSocks:
                 if sock == self.ctlSock:
+                    self.dataRecieved = True
                     self.handleCtlPackets(self.ctlSock.recv(512))
                 elif sock == self.imuSock:
                     self.handleImuPackets(self.imuSock.recv(512))
@@ -54,8 +79,11 @@ class Jaguar(threading.Thread):
                     self.handleGpsPackets(self.gpsSock.recv(512))
 
     def halt(self):
+        self.go(0,0)
         self.stop.set()
         self.ctlSock.close()
+        self.gpsSock.close()
+        self.imuSock.close()
         self.logFile.close()
         self.join()
 
@@ -114,6 +142,10 @@ class Jaguar(threading.Thread):
         self.logFile.write(data+"\n")
 
     def send(self, comType, data):
+        PACKET_START = "\x5E\x02"
+        PACKET_END   = "\x5E\x0D"
+        TWELVE       = "\x0C"
+
         crc = chr(self.crc(data))
         dest = "\x01"
         pack = PACKET_START + dest + "\x00" + comType + chr(len(data)) + data + crc + PACKET_END
@@ -122,10 +154,15 @@ class Jaguar(threading.Thread):
 
 
     def go(self,powerL,powerR):
+        PWM_CTRL     = "\x06"
+        MAX_PWM      = 32766
+        NO_POWER     = -32768
+
         powerLScaled = powerL*16383.0 + 16383
         powerRScaled = (-powerR*16383.0) + 16383
-        noPower = -32768
-        self.send(PWM_CTRL,self.encodePowers(noPower,noPower,noPower,powerLScaled,powerRScaled,noPower))
+        powerLScaled = max(0,min(MAX_PWM,powerLScaled))
+        powerRScaled = max(0,min(MAX_PWM,powerRScaled))
+        self.send(PWM_CTRL,self.encodePowers(NO_POWER,NO_POWER,NO_POWER,powerLScaled,powerRScaled,NO_POWER))
     
     @staticmethod
     def unpackPowers(powers):
@@ -157,15 +194,25 @@ class Jaguar(threading.Thread):
                 c = c >> 1
         return shift_reg
 
+class JaguarWrapper(cmd.Cmd):
+    def __init__(self,ip):
+        self.robot = Jaguar(ip)
+        self.prompt = ">>: "
+        self.intro = "\nReady!\nEnter help for commands"
+        cmd.Cmd.__init__(self)
+
+    def do_go(self,cmd):
+        cmd = map(int,cmd.split())
+        try:
+            self.robot.go(cmd[0],cmd[1])
+        except:
+            print "Invalid arguments: " + str(cmd)
+
+    def do_go(self,cmd):
+        try:
+            self.robot.halt()
+        except:
+            print "Invalid arguments: " + str(cmd)
+
 if __name__ == "__main__":
-    r = Jaguar('192.168.0.60') 
-    time.sleep(1)
-    r.go(0,.1)
-    time.sleep(1)
-    r.go(0,.2)
-    time.sleep(1)
-    r.go(0,.3)
-    time.sleep(1)
-    r.go(0,.4)
-    time.sleep(1)
-    #r.go(0,0)
+    r = JaguarWrapper('192.168.0.60')
