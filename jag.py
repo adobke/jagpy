@@ -3,6 +3,7 @@ import binascii
 import threading
 import time
 import select
+import pynmea2
 
 PACKET_START = "\x5E\x02"
 PACKET_END   = "\x5E\x0D"
@@ -36,6 +37,7 @@ class Jaguar(threading.Thread):
         self.x_mag,self.y_mag,self.z_mag = (0,0,0)
         self.gpsSock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.gpsSock.connect((imuIpAddr,10002))
+        self.gpsParser = pynmea2.NMEAStreamReader()
 
         threading.Thread.__init__(self, name="jagpy")
         self.start()
@@ -105,7 +107,8 @@ class Jaguar(threading.Thread):
             #print self.x_mag,self.y_mag,self.z_mag
             
     def handleGpsPackets(self,packets):
-        print packets
+        for msg in self.gpsParser.next(packets):
+            print msg
 
     def log(self, data):
         self.logFile.write(data+"\n")
