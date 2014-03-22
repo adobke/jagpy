@@ -7,7 +7,9 @@ def timestamp(s):
     return datetime.time(
         hour=int(s[0:2]),
         minute=int(s[2:4]),
-        second=int(s[4:6]))
+        second=int(s[4:6]),
+        microsecond=int(s[7])*100000
+        )
 
 
 def datestamp(s):

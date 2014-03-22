@@ -6,6 +6,8 @@ import select
 import pynmea2
 import cmd
 
+PACKET_END   = "\x5E\x0D"
+
 class Jaguar(threading.Thread):
     def __init__(self,ip):
         port = 10001
@@ -121,6 +123,10 @@ class Jaguar(threading.Thread):
                 packet = map(int,packet.split(","))
             except:
                 continue
+            
+            if len(packet) < 10:
+                continue
+
             self.x_accel = packet[1]
             self.y_accel = packet[2]
             self.z_accel = packet[3]
@@ -135,15 +141,24 @@ class Jaguar(threading.Thread):
             #print self.x_mag,self.y_mag,self.z_mag
             
     def handleGpsPackets(self,packets):
-        for msg in self.gpsParser.next(packets):
-            print msg
+        try:
+            for msg in self.gpsParser.next(packets):
+                if type(msg) is pynmea2.types.talker.GGA:
+                    print msg
+                    print msg.latitude, msg.longitude, msg.num_sats, msg.timestamp, msg.gps_qual
+                elif type(msg) is pynmea2.types.talker.RMC:
+                    print msg.timestamp
+                else:
+                    print type(msg)
+        except:
+            x = 0
+
 
     def log(self, data):
         self.logFile.write(data+"\n")
 
     def send(self, comType, data):
         PACKET_START = "\x5E\x02"
-        PACKET_END   = "\x5E\x0D"
         TWELVE       = "\x0C"
 
         crc = chr(self.crc(data))
@@ -215,4 +230,7 @@ class JaguarWrapper(cmd.Cmd):
             print "Invalid arguments: " + str(cmd)
 
 if __name__ == "__main__":
-    r = JaguarWrapper('192.168.0.60')
+    r = Jaguar('192.168.0.80')
+    r.go(.4,.4)
+    time.sleep(1)
+    r.go(-.4,-.4)
