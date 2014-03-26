@@ -1,10 +1,8 @@
 import socket
-import binascii
 import threading
-import time
 import select
 import pynmea2
-import cmd
+
 
 PACKET_END   = "\x5E\x0D"
 
@@ -22,12 +20,25 @@ class Jaguar(threading.Thread):
         self.logFile = open("log",'w')
         self.stop= threading.Event()
 
+        # connect to robot control board
+        self.dataRecieved = False
+        self.ctlSock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.ctlSock.connect((ip,port))
+        self.ctlSock.send("a")
+
         try:
             # connect to robot control board
-            self.ctlSock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self.ctlSock.connect((ip,port))
-            self.ctlSock.send("a")
+            self.laserSock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.laserSock.settimeout(2.0)
+            self.laserSock.connect((ip,10002))
+            self.laserSock.send("BM\x0D")
+            self.laserSock.send("GD0045072503\x0D")
+        except Exception as e:
+            print "Failed to connect to laser: " + str(e)
+            self.connected = False
+            return
 
+        try:
             # connect to imu
             self.x_mag,self.y_mag,self.z_mag = (0,0,0)
             self.imuSock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -70,11 +81,16 @@ class Jaguar(threading.Thread):
 
     def run(self):
         while not self.stop.isSet():
-            (rSocks,_,_) = select.select([self.ctlSock, self.imuSock, self.gpsSock],[],[],1)
+            (rSocks,_,_) = select.select([self.ctlSock, self.laserSock, self.imuSock, self.gpsSock],[],[],1)
             for sock in rSocks:
                 if sock == self.ctlSock:
+                    if not self.dataRecieved:
+                        print "Connected"
                     self.dataRecieved = True
                     self.handleCtlPackets(self.ctlSock.recv(512))
+                elif sock == self.laserSock:
+                    self.handleLaserPackets(self.laserSock.recv(512))
+                    self.laserSock.send("GD0045072503\x0D")
                 elif sock == self.imuSock:
                     self.handleImuPackets(self.imuSock.recv(512))
                 elif sock == self.gpsSock:
@@ -88,6 +104,28 @@ class Jaguar(threading.Thread):
         self.imuSock.close()
         self.logFile.close()
         self.join()
+
+    def handleLaserPackets(self,packets):
+        for packet in packets.split('\x0D'):
+            if "00P" in packet:
+                distances = []
+                packet = packet.split('\n')
+                #print packet
+                packet = reduce(lambda x,y: x+y[:-1], packet[3:])
+                #print len(packet)
+                for i in range(0,len(packet)-1,2):
+                    pack = packet[i:i+2]
+                    d = 0
+                    for c in pack:
+                        d = d << 6
+                        d = d + ord(c) - 0x30
+                    distances.append(d)    
+                    #distances.append( ((ord(pack[0]) - 0x30) << 6) | (ord(pack[1])- 0x30) )
+                    #distances.append( ((ord(pack[0]) - 0x30) << 12) | ((ord(pack[1]) - 0x30) << 6) | (ord(pack[2])- 0x30) )
+                    #if len(pack) is 2:
+                    #    distances.append( ((ord(pack[0]) - 0x30) << 6) | (ord(pack[1])- 0x30) )
+                    #    #distances.append( ((ord(pack[0]) - 0x30) << 16 | (ord(pack[1]) - 0x30) << 12) | ((ord(pack[2]) - 0x30) << 6) | (ord(pack[3])- 0x30) )
+                self.distances = distances
 
     def handleCtlPackets(self,packets):
         for packet in packets.split(PACKET_END):
@@ -144,12 +182,14 @@ class Jaguar(threading.Thread):
         try:
             for msg in self.gpsParser.next(packets):
                 if type(msg) is pynmea2.types.talker.GGA:
-                    print msg
-                    print msg.latitude, msg.longitude, msg.num_sats, msg.timestamp, msg.gps_qual
+                    self.latitude = msg.latitude
+                    self.longitude = msg.longitude
+                    self.gps_time = msg.timestamp
+                    self.gps_qual = msg.gps_qual
                 elif type(msg) is pynmea2.types.talker.RMC:
-                    print msg.timestamp
+                    continue
                 else:
-                    print type(msg)
+                    continue
         except:
             x = 0
 
@@ -209,28 +249,3 @@ class Jaguar(threading.Thread):
                 c = c >> 1
         return shift_reg
 
-class JaguarWrapper(cmd.Cmd):
-    def __init__(self,ip):
-        self.robot = Jaguar(ip)
-        self.prompt = ">>: "
-        self.intro = "\nReady!\nEnter help for commands"
-        cmd.Cmd.__init__(self)
-
-    def do_go(self,cmd):
-        cmd = map(int,cmd.split())
-        try:
-            self.robot.go(cmd[0],cmd[1])
-        except:
-            print "Invalid arguments: " + str(cmd)
-
-    def do_go(self,cmd):
-        try:
-            self.robot.halt()
-        except:
-            print "Invalid arguments: " + str(cmd)
-
-if __name__ == "__main__":
-    r = Jaguar('192.168.0.80')
-    r.go(.4,.4)
-    time.sleep(1)
-    r.go(-.4,-.4)
