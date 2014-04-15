@@ -18,6 +18,7 @@ class Jaguar(threading.Thread):
         imuIpAddr = '.'.join(imuIpAddr)
 
         self.logFile = open("log",'w')
+        self.logAll = False;
         self.stop= threading.Event()
 
         # connect to robot control board
@@ -63,11 +64,7 @@ class Jaguar(threading.Thread):
 
     #def testConnection(self,ip):
     #    # Give the ip of the main robot control board
-    #    # but we will try to connect to imu because it is TCP
-    #    ip = map(int,ip.split('.'))
-    #    ip = ipAddr
-    #    ip[3] += 1
-    #    ip = map(str, imuIpAddr)
+    #    # but we will try to connect to imu because it is TCP #    ip = map(int,ip.split('.')) #    ip = ipAddr #    ip[3] += 1 #    ip = map(str, imuIpAddr)
     #    ip = '.'.join(imuIpAddr)
     #    try:
     #        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -99,6 +96,7 @@ class Jaguar(threading.Thread):
     def halt(self):
         self.go(0,0)
         self.stop.set()
+        self.logAll = False
         self.ctlSock.close()
         self.gpsSock.close()
         self.imuSock.close()
@@ -135,7 +133,6 @@ class Jaguar(threading.Thread):
             msgType = pack[4]
 
             if msgType == 0xFF: # system msg
-                print "System msg: " + str(pack[6])
                 if pack[6] == 1: # we need to ack these
                     self.send('\xFF',"\x01")
             elif msgType == 0x7B: # motor snsr
@@ -143,11 +140,11 @@ class Jaguar(threading.Thread):
             elif msgType == 0x7C: # encoders
                 (self.encLeft, self.velLeft, self.dirLeft) = self.unpackPowers(pack[23:29])
                 (self.encRight, self.velRight, self.dirRight) = self.unpackPowers(pack[29:35])
+                self.log("odo,{0},{1}".format(self.encLeft,self.encRight))
             elif msgType == 0x7d: # voltage etc
                 x= 0
             else:
                 print "unknown msg type " + str(msgType)
-        self.log(packets)
 
     def handleImuPackets(self,packets):
         for packet in packets.split("#\r\n"):
@@ -177,6 +174,8 @@ class Jaguar(threading.Thread):
                 self.z_mag = packet[9]
             #print self.x_accel,self.y_accel,self.z_accel
             #print self.x_mag,self.y_mag,self.z_mag
+            self.log("imu,{0},{1},{2},{3},{3},{4},{5},{6},{7},{8}".format(self.x_accel,self.y_accel,self.z_accel\
+                    ,self.x_gyro,self.y_gyro,self.z_gyro,self.x_mag,self.y_mag,self.z_mag))
             
     def handleGpsPackets(self,packets):
         try:
@@ -186,6 +185,7 @@ class Jaguar(threading.Thread):
                     self.longitude = msg.longitude
                     self.gps_time = msg.timestamp
                     self.gps_qual = msg.gps_qual
+                    self.log("gps,{0},{1},{2}".format(self.latitude,self.longitude,self.gps_qual))
                 elif type(msg) is pynmea2.types.talker.RMC:
                     continue
                 else:
@@ -195,7 +195,9 @@ class Jaguar(threading.Thread):
 
 
     def log(self, data):
-        self.logFile.write(data+"\n")
+        if(self.logAll):
+            print "should log"
+            self.logFile.write(str(self.gps_time)+","+data+"\n")
 
     def send(self, comType, data):
         PACKET_START = "\x5E\x02"
